@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 
@@ -17,6 +18,7 @@ import (
 
 const ServicioNewRFC = 262
 const ServicioFirmaElectronia = 29
+const ServicioPersonasMorales = 178
 
 type EntidadFederativa struct {
 	ID      int
@@ -40,8 +42,52 @@ var (
   servicio string
   progress bool
 
+  telegramToken string
+  telegramChatID string
+
 	Entidades []EntidadFederativa
 )
+
+func getUrl() string {
+	return fmt.Sprintf("https://api.telegram.org/bot%s", telegramToken)
+}
+
+func SendMessage(text string) (bool, error) {
+	// Global variables
+	var err error
+	var response *http.Response
+
+	// Send the message
+	url := fmt.Sprintf("%s/sendMessage", getUrl())
+	body, _ := json.Marshal(map[string]string{
+		"chat_id": telegramChatID,
+		"text":    text,
+	})
+	response, err = http.Post(
+		url,
+		"application/json",
+		bytes.NewBuffer(body),
+	)
+	if err != nil {
+		return false, err
+	}
+
+	// Close the request at the end
+	defer response.Body.Close()
+
+	// Body
+	body, err = ioutil.ReadAll(response.Body)
+	if err != nil {
+		return false, err
+	}
+
+	// Log
+	log.Infof("Message '%s' was sent", text)
+	log.Infof("Response JSON: %s", string(body))
+
+	// Return
+	return true, nil
+}
 
 func xsrfToken(cookie string) (string, error) {
 	parts := strings.Split(cookie, "; ")
@@ -56,8 +102,12 @@ func xsrfToken(cookie string) (string, error) {
 
 func newReq(entidadeID, moduloID int, cookie, xsrf string) (*http.Request, error) {
   servicioID := ServicioNewRFC
-  if servicio == "efirma" {
+
+  switch servicio {
+  case "efirma":
     servicioID = ServicioFirmaElectronia
+  case "moral":
+    servicioID = ServicioPersonasMorales
   }
 
 	reqBody, _ := json.Marshal(map[string]int{
@@ -152,6 +202,8 @@ func init() {
 	flag.StringVar(&cookie, "cookie", "", "cookie")
 	flag.StringVar(&servicio, "servicio", "rfc", "servicio (efirma | rfc)")
   flag.BoolVar(&progress, "progress", false, "show progress")
+	flag.StringVar(&telegramToken, "telegram-token", os.Getenv("RFCITA_TOKEN"), "telegram rfcita bot token")
+	flag.StringVar(&telegramChatID, "telegram-chat-id", os.Getenv("RFCITA_CHAT_ID"), "telegram user chat id")
 
 	Entidades = []EntidadFederativa{
 		{
