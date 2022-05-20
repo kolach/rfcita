@@ -30,6 +30,11 @@ type Modulo struct {
 	ID           int
 	Name         string
 	Availability []byte
+	Error        error
+}
+
+func (m Modulo) Available() bool {
+	return len(m.Availability) > 0 && string(m.Availability) != "[]"
 }
 
 // MST Cosumel = 262, 146
@@ -38,14 +43,15 @@ type Modulo struct {
 // ADSC Quintana Roo "2" Cancun = 262, 145
 
 var (
-	cookie string
-  servicio string
-  progress bool
+	cookie   string
+	servicio string
+	progress bool
 
-  telegramToken string
-  telegramChatID string
+	telegramToken  string
+	telegramChatID string
+	telegramNotify bool
 
-	Entidades []EntidadFederativa
+	qrOnly bool
 )
 
 func getUrl() string {
@@ -76,14 +82,14 @@ func SendMessage(text string) (bool, error) {
 	defer response.Body.Close()
 
 	// Body
-	body, err = ioutil.ReadAll(response.Body)
+	body, err = io.ReadAll(response.Body)
 	if err != nil {
 		return false, err
 	}
 
 	// Log
-	log.Infof("Message '%s' was sent", text)
-	log.Infof("Response JSON: %s", string(body))
+	log.Printf("Message '%s' was sent", text)
+	log.Printf("Response JSON: %s", string(body))
 
 	// Return
 	return true, nil
@@ -101,14 +107,14 @@ func xsrfToken(cookie string) (string, error) {
 }
 
 func newReq(entidadeID, moduloID int, cookie, xsrf string) (*http.Request, error) {
-  servicioID := ServicioNewRFC
+	servicioID := ServicioNewRFC
 
-  switch servicio {
-  case "efirma":
-    servicioID = ServicioFirmaElectronia
-  case "moral":
-    servicioID = ServicioPersonasMorales
-  }
+	switch servicio {
+	case "efirma":
+		servicioID = ServicioFirmaElectronia
+	case "moral":
+		servicioID = ServicioPersonasMorales
+	}
 
 	reqBody, _ := json.Marshal(map[string]int{
 		"servicio": servicioID,
@@ -140,300 +146,362 @@ func newReq(entidadeID, moduloID int, cookie, xsrf string) (*http.Request, error
 func main() {
 	flag.Parse()
 
+	Entidades := entidades()
+
 	xsrf, err := xsrfToken(cookie)
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
 
-  totalModulos := 0
+	totalModulos := 0
 	for _, entidad := range Entidades {
-		totalModulos +=  len(entidad.Modulos)
-  }
+		totalModulos += len(entidad.Modulos)
+	}
 
-  var bar *pb.ProgressBar
-  if progress {
-    bar = pb.StartNew(totalModulos)
-  }
+	var bar *pb.ProgressBar
+	if progress {
+		bar = pb.StartNew(totalModulos)
+	}
 
 	client := http.DefaultClient
-  var wg sync.WaitGroup
-  wg.Add(totalModulos)
+	var wg sync.WaitGroup
+	wg.Add(totalModulos)
 
 	for _, entidad := range Entidades {
 		for _, modulo := range entidad.Modulos {
-      go func(modulo *Modulo) {
-        defer wg.Done()
-        if progress {
-          defer bar.Increment()
-        }
+			go func(modulo *Modulo) {
+				defer wg.Done()
+				if progress {
+					defer bar.Increment()
+				}
 
-        req, _ := newReq(entidad.ID, modulo.ID, cookie, xsrf)
-        res, err := client.Do(req)
+				modulo.Availability = nil
 
-        if err != nil {
-          log.Fatalf("failed to send calendar request: %v", err)
-        }
+				req, _ := newReq(entidad.ID, modulo.ID, cookie, xsrf)
+				res, err := client.Do(req)
 
-        defer res.Body.Close()
-        body, _ := io.ReadAll(res.Body)
+				if err != nil {
+					log.Fatalf("failed to send calendar request: %v", err)
+				}
 
-        modulo.Availability = body
-      }(modulo)
+				if res.StatusCode == http.StatusOK {
+					defer res.Body.Close()
+					modulo.Availability, modulo.Error = io.ReadAll(res.Body)
+				}
+
+			}(modulo)
 		}
 	}
 
-  wg.Wait()
+	wg.Wait()
 
-  if progress {
-    bar.Finish()
-  }
+	if progress {
+		bar.Finish()
+	}
 
+	// New Buffer.
+	var b bytes.Buffer
 
 	for _, entidad := range Entidades {
 		for _, modulo := range entidad.Modulos {
-			fmt.Printf("%s - %s: %s\n", entidad.Name, modulo.Name, string(modulo.Availability))
+			if modulo.Error != nil {
+				fmt.Printf("%s - %s: %v\n", entidad.Name, modulo.Name, modulo.Error)
+			} else {
+				message := fmt.Sprintf("%s - %s: %s\n", entidad.Name, modulo.Name, string(modulo.Availability))
+				fmt.Print(message)
+
+				if modulo.Available() {
+					b.WriteString(message)
+				}
+			}
 		}
 		fmt.Println("--------------------------------------------")
 	}
 
+	message := b.String()
+
+	// if len(message) == 0 {
+	// 	message = "No hay citas disponibles"
+	// }
+
+	if telegramNotify {
+		if len(message) > 0 {
+			if _, err = SendMessage(message); err != nil {
+				fmt.Println("[ERROR] failed to send Telegram message")
+			}
+		}
+	}
 }
 
 func init() {
 	flag.StringVar(&cookie, "cookie", "", "cookie")
 	flag.StringVar(&servicio, "servicio", "rfc", "servicio (efirma | rfc)")
-  flag.BoolVar(&progress, "progress", false, "show progress")
+	flag.BoolVar(&progress, "progress", false, "show progress")
 	flag.StringVar(&telegramToken, "telegram-token", os.Getenv("RFCITA_TOKEN"), "telegram rfcita bot token")
 	flag.StringVar(&telegramChatID, "telegram-chat-id", os.Getenv("RFCITA_CHAT_ID"), "telegram user chat id")
+	flag.BoolVar(&telegramNotify, "notify", false, "send notification about available citas using Telegram")
+	flag.BoolVar(&qrOnly, "qr-only", false, "only check Q.Roo")
+}
 
-	Entidades = []EntidadFederativa{
-		{
-			ID:   262,
-			Name: "Quintana Roo",
-			Modulos: []*Modulo{
-				{
-					ID:   145,
-					Name: "ADSC Quintana Roo '2' Cancun",
-				},
-				{
-					ID:   146,
-					Name: "MST Cosumel",
-				},
-				{
-					ID:   147,
-					Name: "MST Playa del Carmen",
-				},
-				{
-					ID:   148,
-					Name: "MST Chetumal",
-				},
+func entidades() []EntidadFederativa {
+
+	quintanaRoo := EntidadFederativa{
+		ID:   262,
+		Name: "Quintana Roo",
+		Modulos: []*Modulo{
+			{
+				ID:   145,
+				Name: "ADSC Quintana Roo '2' Cancun",
+			},
+			{
+				ID:   146,
+				Name: "MST Cosumel",
+			},
+			{
+				ID:   147,
+				Name: "MST Playa del Carmen",
+			},
+			{
+				ID:   148,
+				Name: "MST Chetumal",
 			},
 		},
-    {
-			ID:   262,
-			Name: "Yucatan",
-			Modulos: []*Modulo{
-				{
-					ID:   193,
-					Name: "ADSC Yucatan '1'",
-				},
-				{
-					ID:   194,
-					Name: "SARE Merida",
-				},
-				{
-					ID:   195,
-					Name: "MST Valladolid",
-				},
+	}
+
+	yucatan := EntidadFederativa{
+		ID:   262,
+		Name: "Yucatan",
+		Modulos: []*Modulo{
+			{
+				ID:   193,
+				Name: "ADSC Yucatan '1'",
 			},
-		}, {
-			ID:   262,
-			Name: "Guanajuato",
-			Modulos: []*Modulo{
-				{
-					ID:   84,
-					Name: "ADSC Guanajuato '3' Celaya",
-				},
-				{
-					ID:   89,
-					Name: "ADSC Guanajuato '2' Leon",
-				},
-				{
-					ID:   90,
-					Name: "MST Guanajuato",
-				},
-				{
-					ID:   87,
-					Name: "MST Irapuato",
-				},
-				{
-					ID:   88,
-					Name: "MST Salamanca",
-				},
-				{
-					ID:   86,
-					Name: "MST San Migguel de Allende",
-				},
+			{
+				ID:   194,
+				Name: "SARE Merida",
 			},
-		}, {
-			ID:   262,
-			Name: "Queretaro",
-			Modulos: []*Modulo{
-				{
-					ID:   143,
-					Name: "ADSC Quertetaro '1'",
-				},
-				{
-					ID:   144,
-					Name: "MST San Juan del Rio",
-				},
-				{
-					ID:   241,
-					Name: "MST Boulevares, Queretaro",
-				},
-			},
-		}, {
-			ID:   262,
-			Name: "Puebla",
-			Modulos: []*Modulo{
-				{
-					ID:   137,
-					Name: "MST Huauachinango",
-				},
-				{
-					ID:   140,
-					Name: "MST Izucar de Matamoros",
-				},
-				{
-					ID:   142,
-					Name: "SARE Atlixco",
-				},
-				{
-					ID:   139,
-					Name: "ADSC Puebla '2' Puebla",
-				},
-				{
-					ID:   198,
-					Name: "ADSC Puebla '1'",
-				},
-				{
-					ID:   134,
-					Name: "MST Palacio Federal",
-				},
-				{
-					ID:   138,
-					Name: "Chignahuapan",
-				},
-				{
-					ID:   141,
-					Name: "MST San Martin Texmelican",
-				},
-				{
-					ID:   136,
-					Name: "MST Teziutlan",
-				},
-				{
-					ID:   135,
-					Name: "MST Tehuacan",
-				},
-			},
-		}, {
-			ID:   262,
-			Name: "Hidalgo",
-			Modulos: []*Modulo{
-				{
-					ID:   98,
-					Name: "MST Tula de Allende",
-				},
-				{
-					ID:   96,
-					Name: "ADSC Hidalgo '1'",
-				},
-				{
-					ID:   99,
-					Name: "MST Tulancingo de Bravo",
-				},
-				{
-					ID:   97,
-					Name: "MST Ixmiquilpan",
-				},
-			},
-		}, {
-			ID:   262,
-			Name: "Morelos",
-			Modulos: []*Modulo{
-				{
-					ID:   119,
-					Name: "ADSC Morelos '1'",
-				},
-				{
-					ID:   120,
-					Name: "MST Cuaulta Presidencia",
-				},
-			},
-		}, {
-			ID:   262,
-			Name: "San Luis Potosi",
-			Modulos: []*Modulo{
-				{
-					ID:   150,
-					Name: "MST Matehuala",
-				},
-				{
-					ID:   149,
-					Name: "ADSC San Luis Potosi '1'",
-				},
-				{
-					ID:   151,
-					Name: "MST Cd. Valles",
-				},
-			},
-		}, {
-			ID:   262,
-			Name: "Ciudad de Mexico",
-			Modulos: []*Modulo{
-				{
-					ID:   70,
-					Name: "ADSC Distrito Federal '3' Oriente",
-				},
-				{
-					ID:   68,
-					Name: "ADSC Distrito Federal '1' Norte",
-				},
-				{
-					ID:   334,
-					Name: "MST Oasis",
-				},
-				{
-					ID:   72,
-					Name: "MST Del Valle",
-				},
-				{
-					ID:   66,
-					Name: "ASDC Distrito Federal '2' Centro",
-				},
-				{
-					ID:   71,
-					Name: "ASDC Distrito Federal '4' Sur",
-				},
-			},
-		}, {
-			ID:   262,
-			Name: "Chihuahua",
-			Modulos: []*Modulo{
-				{
-					ID:   51,
-					Name: "MST Nuevo Cases Grandes",
-				},
-			},
-		}, {
-			ID:   262,
-			Name: "Baja California",
-			Modulos: []*Modulo{
-				{
-					ID:   37,
-					Name: "MST Puerto Penasco",
-				},
+			{
+				ID:   195,
+				Name: "MST Valladolid",
 			},
 		},
+	}
+
+	if qrOnly {
+		return []EntidadFederativa{
+			quintanaRoo,
+      yucatan,
+		}
+	} else {
+		return []EntidadFederativa{
+			quintanaRoo,
+			{
+				ID:   262,
+				Name: "Yucatan",
+				Modulos: []*Modulo{
+					{
+						ID:   193,
+						Name: "ADSC Yucatan '1'",
+					},
+					{
+						ID:   194,
+						Name: "SARE Merida",
+					},
+					{
+						ID:   195,
+						Name: "MST Valladolid",
+					},
+				},
+			}, {
+				ID:   262,
+				Name: "Guanajuato",
+				Modulos: []*Modulo{
+					{
+						ID:   84,
+						Name: "ADSC Guanajuato '3' Celaya",
+					},
+					{
+						ID:   89,
+						Name: "ADSC Guanajuato '2' Leon",
+					},
+					{
+						ID:   90,
+						Name: "MST Guanajuato",
+					},
+					{
+						ID:   87,
+						Name: "MST Irapuato",
+					},
+					{
+						ID:   88,
+						Name: "MST Salamanca",
+					},
+					{
+						ID:   86,
+						Name: "MST San Migguel de Allende",
+					},
+				},
+			}, {
+				ID:   262,
+				Name: "Queretaro",
+				Modulos: []*Modulo{
+					{
+						ID:   143,
+						Name: "ADSC Quertetaro '1'",
+					},
+					{
+						ID:   144,
+						Name: "MST San Juan del Rio",
+					},
+					{
+						ID:   241,
+						Name: "MST Boulevares, Queretaro",
+					},
+				},
+			}, {
+				ID:   262,
+				Name: "Puebla",
+				Modulos: []*Modulo{
+					{
+						ID:   137,
+						Name: "MST Huauachinango",
+					},
+					{
+						ID:   140,
+						Name: "MST Izucar de Matamoros",
+					},
+					{
+						ID:   142,
+						Name: "SARE Atlixco",
+					},
+					{
+						ID:   139,
+						Name: "ADSC Puebla '2' Puebla",
+					},
+					{
+						ID:   198,
+						Name: "ADSC Puebla '1'",
+					},
+					{
+						ID:   134,
+						Name: "MST Palacio Federal",
+					},
+					{
+						ID:   138,
+						Name: "Chignahuapan",
+					},
+					{
+						ID:   141,
+						Name: "MST San Martin Texmelican",
+					},
+					{
+						ID:   136,
+						Name: "MST Teziutlan",
+					},
+					{
+						ID:   135,
+						Name: "MST Tehuacan",
+					},
+				},
+			}, {
+				ID:   262,
+				Name: "Hidalgo",
+				Modulos: []*Modulo{
+					{
+						ID:   98,
+						Name: "MST Tula de Allende",
+					},
+					{
+						ID:   96,
+						Name: "ADSC Hidalgo '1'",
+					},
+					{
+						ID:   99,
+						Name: "MST Tulancingo de Bravo",
+					},
+					{
+						ID:   97,
+						Name: "MST Ixmiquilpan",
+					},
+				},
+			}, {
+				ID:   262,
+				Name: "Morelos",
+				Modulos: []*Modulo{
+					{
+						ID:   119,
+						Name: "ADSC Morelos '1'",
+					},
+					{
+						ID:   120,
+						Name: "MST Cuaulta Presidencia",
+					},
+				},
+			}, {
+				ID:   262,
+				Name: "San Luis Potosi",
+				Modulos: []*Modulo{
+					{
+						ID:   150,
+						Name: "MST Matehuala",
+					},
+					{
+						ID:   149,
+						Name: "ADSC San Luis Potosi '1'",
+					},
+					{
+						ID:   151,
+						Name: "MST Cd. Valles",
+					},
+				},
+			}, {
+				ID:   262,
+				Name: "Ciudad de Mexico",
+				Modulos: []*Modulo{
+					{
+						ID:   70,
+						Name: "ADSC Distrito Federal '3' Oriente",
+					},
+					{
+						ID:   68,
+						Name: "ADSC Distrito Federal '1' Norte",
+					},
+					{
+						ID:   334,
+						Name: "MST Oasis",
+					},
+					{
+						ID:   72,
+						Name: "MST Del Valle",
+					},
+					{
+						ID:   66,
+						Name: "ASDC Distrito Federal '2' Centro",
+					},
+					{
+						ID:   71,
+						Name: "ASDC Distrito Federal '4' Sur",
+					},
+				},
+			}, {
+				ID:   262,
+				Name: "Chihuahua",
+				Modulos: []*Modulo{
+					{
+						ID:   51,
+						Name: "MST Nuevo Cases Grandes",
+					},
+				},
+			}, {
+				ID:   262,
+				Name: "Baja California",
+				Modulos: []*Modulo{
+					{
+						ID:   37,
+						Name: "MST Puerto Penasco",
+					},
+				},
+			},
+		}
 	}
 }
