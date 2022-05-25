@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"github.com/cheggaaa/pb/v3"
+	"github.com/docker/distribution/notifications"
 )
 
 const ServicioNewRFC = 262
@@ -187,7 +188,22 @@ func main() {
 				if res.StatusCode == http.StatusOK {
 					defer res.Body.Close()
 					modulo.Availability, modulo.Error = io.ReadAll(res.Body)
-				}
+				} else {
+          if res.StatusCode != http.StatusNotFound {
+            fmt.Println("request failed with status code", res.StatusCode)
+          }
+
+          if res.StatusCode == http.StatusInternalServerError {
+            message := "SAT server request failed with 500, update cookie!"
+            if telegramNotify {
+              if _, err = SendMessage(message); err != nil {
+                fmt.Println("[ERROR] failed to send Telegram message")
+              }
+            }
+            fmt.Println(message)
+            os.Exit(1)
+          }
+        }
 
 			}(modulo)
 		}
