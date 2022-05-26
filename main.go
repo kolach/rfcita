@@ -12,9 +12,9 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/cheggaaa/pb/v3"
-	"github.com/docker/distribution/notifications"
 )
 
 const ServicioNewRFC = 262
@@ -38,15 +38,16 @@ func (m Modulo) Available() bool {
 	return len(m.Availability) > 0 && string(m.Availability) != "[]"
 }
 
-// MST Cosumel = 262, 146
-// MST Chetumal = 262,148
-// MST Playa del Carmen = 262, 147
-// ADSC Quintana Roo "2" Cancun = 262, 145
+const (
+  xsrfToken = "238013bf-667b-4c19-b87b-41cd60dd988f"
+  cookieSignature = "55328d4d2089d20635a8a69fe3b09b46=1bb75227e80fbc8844d13f4489fea163"
+)
 
 var (
-	cookie   string
-	servicio string
-	progress bool
+	cookie      string
+	servicio    string
+	progress    bool
+	sessionFile string
 
 	telegramToken  string
 	telegramChatID string
@@ -96,18 +97,27 @@ func SendMessage(text string) (bool, error) {
 	return true, nil
 }
 
-func xsrfToken(cookie string) (string, error) {
-	parts := strings.Split(cookie, "; ")
-	for _, part := range parts {
-		kv := strings.Split(part, "=")
-		if kv[0] == "XSRF-TOKEN" {
-			return kv[1], nil
-		}
+func newLoginReq() (*http.Request, error) {
+	req, err := http.NewRequest("GET", "https://citas.sat.gob.mx/api/customLogin", nil)
+	if err != nil {
+		return nil, err
 	}
-	return "", errors.New("failed to find XSRF-TOKEN")
+
+	req.Header.Set("authority", "citas.sat.gob.mx")
+	req.Header.Set("accept", "application/json, text/plain, */*")
+	req.Header.Set("accept-language", "en-US,en;q=0.9")
+	req.Header.Set("cookie", fmt.Sprintf("XSRF-TOKEN=%s; %s", xsrfToken, cookieSignature))
+	req.Header.Set("referer", "https://citas.sat.gob.mx/creaCita")
+	req.Header.Set("sec-fetch-dest", "empty")
+	req.Header.Set("sec-fetch-mode", "cors")
+	req.Header.Set("sec-fetch-site", "same-origin")
+	req.Header.Set("sec-gpc", "1")
+	req.Header.Set("user-agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/101.0.4951.67 Safari/537.36")
+
+	return req, nil
 }
 
-func newReq(entidadeID, moduloID int, cookie, xsrf string) (*http.Request, error) {
+func newCalendarReq(entidadeID, moduloID int, sessionToken string) (*http.Request, error) {
 	servicioID := ServicioNewRFC
 
 	switch servicio {
@@ -131,7 +141,6 @@ func newReq(entidadeID, moduloID int, cookie, xsrf string) (*http.Request, error
 	req.Header.Set("accept", "application/json, text/plain, */*")
 	req.Header.Set("accept-language", "en-US,en;q=0.9")
 	req.Header.Set("content-type", "application/json")
-	req.Header.Set("cookie", cookie)
 	req.Header.Set("origin", "https://citas.sat.gob.mx")
 	req.Header.Set("referer", "https://citas.sat.gob.mx/creaCita")
 	req.Header.Set("sec-fetch-dest", "empty")
@@ -139,9 +148,69 @@ func newReq(entidadeID, moduloID int, cookie, xsrf string) (*http.Request, error
 	req.Header.Set("sec-fetch-site", "same-origin")
 	req.Header.Set("sec-gpc", "1")
 	req.Header.Set("user-agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.88 Safari/537.36")
-	req.Header.Set("x-xsrf-token", xsrf)
+	req.Header.Set("x-xsrf-token", fmt.Sprintf("%s", xsrfToken))
+	req.Header.Set("cookie", fmt.Sprintf("XSRF-TOKEN=%s; %s; JSESSIONID=%s", xsrfToken, cookieSignature, sessionToken))
 
 	return req, nil
+}
+
+func extractSessionToken(cookie string) (string, error) {
+	segments := strings.Split(cookie, "; ")
+	for _, segment := range segments {
+		parts := strings.Split(segment, "=")
+		if parts[0] == "JSESSIONID" && len(parts) > 1 {
+			return parts[1], nil
+		}
+	}
+
+	return "", errors.New("session token not found")
+}
+
+func login() (string, error) {
+	req, err := newLoginReq()
+	if err != nil {
+		return "", err
+	}
+
+	client := http.DefaultClient
+	res, err := client.Do(req)
+
+	cookie := res.Header.Get("set-cookie")
+	if len(cookie) == 0 {
+		return "", errors.New("failed to find login cookie")
+	}
+
+	return extractSessionToken(cookie)
+}
+
+func readSessionToken(path string) (string, error) {
+	f, err := os.Open(path)
+
+	if err == nil {
+		var token []byte
+		token, err = io.ReadAll(f)
+		if err == nil {
+			return string(token), nil
+		}
+	}
+
+	log.Printf("[WARN] failed to read session token: %v, requesting a new one", err)
+
+	token, err := login()
+	if err != nil {
+		return "", err
+	}
+
+	f, err = os.Create(path)
+	if err != nil {
+		return "", err
+	}
+
+	if _, err := f.WriteString(token); err != nil {
+		log.Printf("[WARN] failed to store session token: %v", err)
+	}
+
+	return token, nil
 }
 
 func main() {
@@ -149,10 +218,16 @@ func main() {
 
 	Entidades := entidades()
 
-	xsrf, err := xsrfToken(cookie)
+	sessionToken, err := readSessionToken(sessionFile)
 	if err != nil {
-		log.Fatalf("%v", err)
+		log.Printf("[ERR ] failed to obtain session token: %v", err)
+		os.Exit(1)
 	}
+
+	// xsrf, err := xsrfToken(cookie)
+	// if err != nil {
+	// 	log.Fatalf("%v", err)
+	// }
 
 	totalModulos := 0
 	for _, entidad := range Entidades {
@@ -168,6 +243,8 @@ func main() {
 	var wg sync.WaitGroup
 	wg.Add(totalModulos)
 
+  var sesionExpiredCount int64
+
 	for _, entidad := range Entidades {
 		for _, modulo := range entidad.Modulos {
 			go func(modulo *Modulo) {
@@ -178,7 +255,7 @@ func main() {
 
 				modulo.Availability = nil
 
-				req, _ := newReq(entidad.ID, modulo.ID, cookie, xsrf)
+				req, _ := newCalendarReq(entidad.ID, modulo.ID, sessionToken)
 				res, err := client.Do(req)
 
 				if err != nil {
@@ -189,21 +266,14 @@ func main() {
 					defer res.Body.Close()
 					modulo.Availability, modulo.Error = io.ReadAll(res.Body)
 				} else {
-          if res.StatusCode != http.StatusNotFound {
-            fmt.Println("request failed with status code", res.StatusCode)
-          }
+					if res.StatusCode != http.StatusNotFound {
+						fmt.Println("request failed with status code", res.StatusCode)
+					}
 
-          if res.StatusCode == http.StatusInternalServerError {
-            message := "SAT server request failed with 500, update cookie!"
-            if telegramNotify {
-              if _, err = SendMessage(message); err != nil {
-                fmt.Println("[ERROR] failed to send Telegram message")
-              }
-            }
-            fmt.Println(message)
-            os.Exit(1)
-          }
-        }
+					if res.StatusCode == http.StatusInternalServerError {
+            atomic.AddInt64(&sesionExpiredCount, 1)
+					}
+				}
 
 			}(modulo)
 		}
@@ -243,14 +313,29 @@ func main() {
 	if telegramNotify {
 		if len(message) > 0 {
 			if _, err = SendMessage(message); err != nil {
-				fmt.Println("[ERROR] failed to send Telegram message")
+        log.Printf("[ERR ] failed to send Telegram message: %v", err)
 			}
 		}
 	}
+
+  if sesionExpiredCount > 0 {
+    if err := os.Remove(sessionFile); err != nil {
+      log.Printf("[ERR ] failed to remove session file: %v", err)
+    }
+
+    message := "SAT server request failed with 500, session cookie will be regenerated"
+    if telegramNotify {
+      if _, err = SendMessage(message); err != nil {
+        log.Printf("[ERR ] failed to send Telegram message: %v", err)
+      }
+    }
+    fmt.Println(message)
+    os.Exit(1)
+  }
 }
 
 func init() {
-	flag.StringVar(&cookie, "cookie", "", "cookie")
+	flag.StringVar(&sessionFile, "session-file", "./session-token", "file with session token")
 	flag.StringVar(&servicio, "servicio", "rfc", "servicio (efirma | rfc)")
 	flag.BoolVar(&progress, "progress", false, "show progress")
 	flag.StringVar(&telegramToken, "telegram-token", os.Getenv("RFCITA_TOKEN"), "telegram rfcita bot token")
@@ -306,7 +391,7 @@ func entidades() []EntidadFederativa {
 	if qrOnly {
 		return []EntidadFederativa{
 			quintanaRoo,
-      yucatan,
+			yucatan,
 		}
 	} else {
 		return []EntidadFederativa{

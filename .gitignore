@@ -1,2 +1,4 @@
 *.txt
 rfcita
+session-token
+.*-session-token
