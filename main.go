@@ -41,7 +41,7 @@ func (m Modulo) Available() bool {
 
 const (
   xsrfToken = "238013bf-667b-4c19-b87b-41cd60dd988f"
-  cookieSignature = "55328d4d2089d20635a8a69fe3b09b46=9cdb530fd390a9bdaa6fca6aee63cab3"
+  cookieSignature = "55328d4d2089d20635a8a69fe3b09b46=f8ef8c15e315faf661a36d4c7bc5f983"
 )
 
 var (
@@ -226,6 +226,9 @@ func main() {
 	Entidades := entidades()
 
 	sessionToken, err := readSessionToken(sessionFile)
+
+  log.Printf("[INFO] session token is: %s", sessionToken)
+
 	if err != nil {
 		log.Printf("[ERR ] failed to obtain session token: %v", err)
 		os.Exit(1)
