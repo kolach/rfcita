@@ -40,7 +40,7 @@ func (m Modulo) Available() bool {
 
 const (
   xsrfToken = "238013bf-667b-4c19-b87b-41cd60dd988f"
-  cookieSignature = "55328d4d2089d20635a8a69fe3b09b46=1bb75227e80fbc8844d13f4489fea163"
+  cookieSignature = "55328d4d2089d20635a8a69fe3b09b46=9cdb530fd390a9bdaa6fca6aee63cab3"
 )
 
 var (
@@ -210,6 +210,12 @@ func readSessionToken(path string) (string, error) {
 		log.Printf("[WARN] failed to store session token: %v", err)
 	}
 
+  if err := f.Close(); err != nil {
+		log.Printf("[WARN] failed to close file: %v", err)
+  }
+
+  log.Printf("[INFO] new session token is stored at %s", sessionFile)
+
 	return token, nil
 }
 
@@ -267,14 +273,14 @@ func main() {
 					modulo.Availability, modulo.Error = io.ReadAll(res.Body)
 				} else {
 					if res.StatusCode != http.StatusNotFound {
-						fmt.Println("request failed with status code", res.StatusCode)
-					}
-
-					if res.StatusCode == http.StatusInternalServerError {
-            atomic.AddInt64(&sesionExpiredCount, 1)
+            if res.StatusCode == http.StatusInternalServerError {
+              log.Printf("[ERR ] request failed for entidad: %s, modulo %s, %s", entidad.Name, modulo.Name, res.Status)
+              atomic.AddInt64(&sesionExpiredCount, 1)
+            } else {
+              fmt.Println("request failed with status code", res.StatusCode)
+            }
 					}
 				}
-
 			}(modulo)
 		}
 	}
@@ -319,6 +325,7 @@ func main() {
 	}
 
   if sesionExpiredCount > 0 {
+    log.Printf("[WARN] removing session file %s as server returned 500", sessionFile)
     if err := os.Remove(sessionFile); err != nil {
       log.Printf("[ERR ] failed to remove session file: %v", err)
     }
