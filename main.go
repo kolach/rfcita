@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/cheggaaa/pb/v3"
 )
@@ -230,11 +231,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// xsrf, err := xsrfToken(cookie)
-	// if err != nil {
-	// 	log.Fatalf("%v", err)
-	// }
-
 	totalModulos := 0
 	for _, entidad := range Entidades {
 		totalModulos += len(entidad.Modulos)
@@ -245,7 +241,9 @@ func main() {
 		bar = pb.StartNew(totalModulos)
 	}
 
-	client := http.DefaultClient
+	client := http.Client {
+    Timeout: 1 * time.Minute,
+  }
 	var wg sync.WaitGroup
 	wg.Add(totalModulos)
 
@@ -264,23 +262,27 @@ func main() {
 				req, _ := newCalendarReq(entidad.ID, modulo.ID, sessionToken)
 				res, err := client.Do(req)
 
-				if err != nil {
-					log.Fatalf("failed to send calendar request: %v", err)
-				}
-
-				if res.StatusCode == http.StatusOK {
-					defer res.Body.Close()
-					modulo.Availability, modulo.Error = io.ReadAll(res.Body)
-				} else {
-					if res.StatusCode != http.StatusNotFound {
-            if res.StatusCode == http.StatusInternalServerError {
-              log.Printf("[ERR ] request failed for entidad: %s, modulo %s, %s", entidad.Name, modulo.Name, res.Status)
-              atomic.AddInt64(&sesionExpiredCount, 1)
-            } else {
-              fmt.Println("request failed with status code", res.StatusCode)
+        if err != nil {
+          if os.IsTimeout(err) {
+            log.Printf("[ERR ] request timeout for: %s, modulo %s", entidad.Name, modulo.Name)
+          } else {
+            log.Fatalf("failed to send calendar request: %v", err)
+				  }
+        } else {
+          if res.StatusCode == http.StatusOK {
+            defer res.Body.Close()
+            modulo.Availability, modulo.Error = io.ReadAll(res.Body)
+          } else {
+            if res.StatusCode != http.StatusNotFound {
+              if res.StatusCode == http.StatusInternalServerError {
+                log.Printf("[ERR ] request failed for entidad: %s, modulo %s, %s", entidad.Name, modulo.Name, res.Status)
+                atomic.AddInt64(&sesionExpiredCount, 1)
+              } else {
+                fmt.Println("request failed with status code", res.StatusCode)
+              }
             }
-					}
-				}
+          }
+        }
 			}(modulo)
 		}
 	}
