@@ -41,7 +41,7 @@ func (m Modulo) Available() bool {
 
 const (
   xsrfToken = "2b49460d-f08d-47ff-b27a-b0dcb2fc1be7"
-  cookieSignature = "55328d4d2089d20635a8a69fe3b09b46=2cb49b17c942b9b839a10c746cbd6a32"
+  cookieSignature = "55328d4d2089d20635a8a69fe3b09b46=fff9cf43910129ea0c096448d61769d9"
 )
 
 var (
