@@ -42,6 +42,7 @@ func (m Modulo) Available() bool {
 const (
   xsrfToken = "2b49460d-f08d-47ff-b27a-b0dcb2fc1be7"
   cookieSignature = "55328d4d2089d20635a8a69fe3b09b46=fff9cf43910129ea0c096448d61769d9"
+  serviceChatID = "73655333" // to send session expired notification
 )
 
 var (
@@ -61,7 +62,7 @@ func getUrl() string {
 	return fmt.Sprintf("https://api.telegram.org/bot%s", telegramToken)
 }
 
-func SendMessage(text string) (bool, error) {
+func SendMessage(text string, chatID string) (bool, error) {
 	// Global variables
 	var err error
 	var response *http.Response
@@ -69,7 +70,7 @@ func SendMessage(text string) (bool, error) {
 	// Send the message
 	url := fmt.Sprintf("%s/sendMessage", getUrl())
 	body, _ := json.Marshal(map[string]string{
-		"chat_id": telegramChatID,
+		"chat_id": chatID,
 		"text":    text,
 	})
 	response, err = http.Post(
@@ -323,7 +324,7 @@ func main() {
 
 	if telegramNotify {
 		if len(message) > 0 {
-			if _, err = SendMessage(message); err != nil {
+			if _, err = SendMessage(message, telegramChatID); err != nil {
         log.Printf("[ERR ] failed to send Telegram message: %v", err)
 			}
 		}
@@ -337,7 +338,7 @@ func main() {
 
     message := "SAT server request failed with 500, session cookie will be regenerated"
     if telegramNotify {
-      if _, err = SendMessage(message); err != nil {
+      if _, err = SendMessage(message, serviceChatID); err != nil {
         log.Printf("[ERR ] failed to send Telegram message: %v", err)
       }
     }
