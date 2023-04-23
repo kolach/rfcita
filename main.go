@@ -40,9 +40,9 @@ func (m Modulo) Available() bool {
 }
 
 const (
-  xsrfToken = "2b49460d-f08d-47ff-b27a-b0dcb2fc1be7"
-  cookieSignature = "55328d4d2089d20635a8a69fe3b09b46=fff9cf43910129ea0c096448d61769d9"
-  serviceChatID = "73655333" // to send session expired notification
+	xsrfToken       = "2b49460d-f08d-47ff-b27a-b0dcb2fc1be7"
+	cookieSignature = "55328d4d2089d20635a8a69fe3b09b46=bc5aa757c02370cba395ec23387db61c"
+	serviceChatID   = "73655333" // to send session expired notification
 )
 
 var (
@@ -212,11 +212,11 @@ func readSessionToken(path string) (string, error) {
 		log.Printf("[WARN] failed to store session token: %v", err)
 	}
 
-  if err := f.Close(); err != nil {
+	if err := f.Close(); err != nil {
 		log.Printf("[WARN] failed to close file: %v", err)
-  }
+	}
 
-  log.Printf("[INFO] new session token is stored at %s", sessionFile)
+	log.Printf("[INFO] new session token is stored at %s", sessionFile)
 
 	return token, nil
 }
@@ -228,7 +228,7 @@ func main() {
 
 	sessionToken, err := readSessionToken(sessionFile)
 
-  log.Printf("[INFO] session token is: %s", sessionToken)
+	log.Printf("[INFO] session token is: %s", sessionToken)
 
 	if err != nil {
 		log.Printf("[ERR ] failed to obtain session token: %v", err)
@@ -245,13 +245,13 @@ func main() {
 		bar = pb.StartNew(totalModulos)
 	}
 
-	client := http.Client {
-    Timeout: 1 * time.Minute,
-  }
+	client := http.Client{
+		Timeout: 1 * time.Minute,
+	}
 	var wg sync.WaitGroup
 	wg.Add(totalModulos)
 
-  var sesionExpiredCount int64
+	var sesionExpiredCount int64
 
 	for _, entidad := range Entidades {
 		for _, modulo := range entidad.Modulos {
@@ -266,27 +266,27 @@ func main() {
 				req, _ := newCalendarReq(entidad.ID, modulo.ID, sessionToken)
 				res, err := client.Do(req)
 
-        if err != nil {
-          if os.IsTimeout(err) {
-            log.Printf("[ERR ] request timeout for: %s, modulo %s", entidad.Name, modulo.Name)
-          } else {
-            log.Fatalf("failed to send calendar request: %v", err)
-				  }
-        } else {
-          if res.StatusCode == http.StatusOK {
-            defer res.Body.Close()
-            modulo.Availability, modulo.Error = io.ReadAll(res.Body)
-          } else {
-            if res.StatusCode != http.StatusNotFound {
-              if res.StatusCode == http.StatusInternalServerError {
-                log.Printf("[ERR ] request failed for entidad: %s, modulo %s, %s", entidad.Name, modulo.Name, res.Status)
-                atomic.AddInt64(&sesionExpiredCount, 1)
-              } else {
-                fmt.Println("request failed with status code", res.StatusCode)
-              }
-            }
-          }
-        }
+				if err != nil {
+					if os.IsTimeout(err) {
+						log.Printf("[ERR ] request timeout for: %s, modulo %s", entidad.Name, modulo.Name)
+					} else {
+						log.Fatalf("failed to send calendar request: %v", err)
+					}
+				} else {
+					if res.StatusCode == http.StatusOK {
+						defer res.Body.Close()
+						modulo.Availability, modulo.Error = io.ReadAll(res.Body)
+					} else {
+						if res.StatusCode != http.StatusNotFound {
+							if res.StatusCode == http.StatusInternalServerError {
+								log.Printf("[ERR ] request failed for entidad: %s, modulo %s, %s", entidad.Name, modulo.Name, res.Status)
+								atomic.AddInt64(&sesionExpiredCount, 1)
+							} else {
+								fmt.Println("request failed with status code", res.StatusCode)
+							}
+						}
+					}
+				}
 			}(modulo)
 		}
 	}
@@ -325,26 +325,26 @@ func main() {
 	if telegramNotify {
 		if len(message) > 0 {
 			if _, err = SendMessage(message, telegramChatID); err != nil {
-        log.Printf("[ERR ] failed to send Telegram message: %v", err)
+				log.Printf("[ERR ] failed to send Telegram message: %v", err)
 			}
 		}
 	}
 
-  if sesionExpiredCount > 0 {
-    log.Printf("[WARN] removing session file %s as server returned 500", sessionFile)
-    if err := os.Remove(sessionFile); err != nil {
-      log.Printf("[ERR ] failed to remove session file: %v", err)
-    }
+	if sesionExpiredCount > 0 {
+		log.Printf("[WARN] removing session file %s as server returned 500", sessionFile)
+		if err := os.Remove(sessionFile); err != nil {
+			log.Printf("[ERR ] failed to remove session file: %v", err)
+		}
 
-    message := "SAT server request failed with 500, session cookie will be regenerated"
-    if telegramNotify {
-      if _, err = SendMessage(message, serviceChatID); err != nil {
-        log.Printf("[ERR ] failed to send Telegram message: %v", err)
-      }
-    }
-    fmt.Println(message)
-    os.Exit(1)
-  }
+		message := "SAT server request failed with 500, session cookie will be regenerated"
+		if telegramNotify {
+			if _, err = SendMessage(message, serviceChatID); err != nil {
+				log.Printf("[ERR ] failed to send Telegram message: %v", err)
+			}
+		}
+		fmt.Println(message)
+		os.Exit(1)
+	}
 }
 
 func init() {
@@ -375,10 +375,10 @@ func entidades() []EntidadFederativa {
 				ID:   147,
 				Name: "MST Playa del Carmen",
 			},
-			{
-				ID:   148,
-				Name: "MST Chetumal",
-			},
+			// {
+			// 	ID:   148,
+			// 	Name: "MST Chetumal",
+			// },
 		},
 	}
 
